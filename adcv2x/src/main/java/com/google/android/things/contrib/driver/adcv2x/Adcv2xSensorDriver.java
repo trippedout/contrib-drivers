@@ -25,8 +25,8 @@ public class Adcv2xSensorDriver implements AutoCloseable {
     private Adcv2x mDevice;
     private UserSensor mUserSensor;
 
-    public Adcv2xSensorDriver(String bus) throws IOException {
-        mDevice = new Adcv2x(bus);
+    public Adcv2xSensorDriver(String bus, int address) throws IOException {
+        mDevice = new Adcv2x(bus, address);
     }
 
     @Override

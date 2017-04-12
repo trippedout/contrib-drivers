@@ -1,5 +1,6 @@
 package com.google.android.things.contrib.driver.adcv2x;
 
+import com.google.android.things.contrib.common.ReadableAnalogDevice;
 import com.google.android.things.pio.I2cDevice;
 import com.google.android.things.pio.PeripheralManagerService;
 
@@ -12,19 +13,26 @@ import java.io.IOException;
  * with lots and lots of bs byte->short->unsigned errors because JAVA.
  */
 
-public class Adcv2x implements AutoCloseable {
+public class Adcv2x implements AutoCloseable, ReadableAnalogDevice {
 
     private static final String TAG = Adcv2x.class.getSimpleName();
 
-    private static final int I2C_ADDRESS = 0x48;
+    public static final String DEFAULT_BUS = "I2C1";
+
+    /**
+     * Out of the box this address is soldered.
+     */
+    public static final int I2C_ADDRESS_48 = 0x48;
+    public static final int I2C_ADDRESS_49 = 0x49;
+    public static final int I2C_ADDRESS_4A = 0x4A;
+    public static final int I2C_ADDRESS_4B = 0x4B;
+
+    private String mBus;
+    private int mAddress;
+
     private I2cDevice mDevice;
 
     private float _scaler = 1.0f;
-
-    /**
-     * Out of the box this bus is soldered.
-     */
-    private static final String DEFAULT_BUS = "I2C1";
 
     public static final short _6_144V = 0x00;
     public static final short _4_096V = 0x01;
@@ -47,9 +55,28 @@ public class Adcv2x implements AutoCloseable {
     private final short RANGE_SHIFT = 9;
     private final int RANGE_MASK = 0x0E00; // bits to clear for gain parameter
 
-    public Adcv2x(String bus) throws IOException {
+    /**
+     * Create a new instance of a Sparkfun ADC V20 board. Read more about it at
+     * https://learn.sparkfun.com/tutorials/sparkfun-blocks-for-intel-edison---adc-v20
+     *
+     * @param bus I2C Bus Address. Typically the default "I2C1", stored as {@link #DEFAULT_BUS},
+     *            but could be something else. Find what's connected with
+     *            {@link PeripheralManagerService#getI2cBusList()}.
+     *
+     * @param address The closed address jumper on the back of the board. Useful for connecting
+     *                multiple boards. Use the static ints enclosed in this class.
+     *
+     *                {@link #I2C_ADDRESS_48} (default when purchased), {@link #I2C_ADDRESS_49},
+     *                {@link #I2C_ADDRESS_4A}, or {@link #I2C_ADDRESS_4B},
+     *
+     * @throws IOException Connection error
+     */
+    public Adcv2x(String bus, int address) throws IOException {
         PeripheralManagerService pioService = new PeripheralManagerService();
-        I2cDevice device = pioService.openI2cDevice(bus, I2C_ADDRESS);
+        I2cDevice device = pioService.openI2cDevice(bus, address);
+
+        mBus = bus;
+        mAddress = address;
 
         try {
             connect(device);
@@ -63,13 +90,13 @@ public class Adcv2x implements AutoCloseable {
     }
 
     public Adcv2x() throws IOException {
-        this(DEFAULT_BUS);
+        this(DEFAULT_BUS, I2C_ADDRESS_48);
     }
 
     /**
      * Create a new AdcV2x sensor driver connected to the given I2c device.
      * @param device I2C device of the sensor.
-     * @throws IOException
+     * @throws IOException Connection to device failed.
      */
     /*package*/  Adcv2x(I2cDevice device) throws IOException {
         connect(device);
@@ -81,10 +108,18 @@ public class Adcv2x implements AutoCloseable {
         }
         mDevice = device;
 
-        //start at a low power default, and allow the user creation to decide proper voltage
-        setRange(_2_048V);
+        // set the range here to 4 volts even tho we know we're only feeding it ~3.3
+        // the dial turned all the way up will read ~3.2
+        setRange(_4_096V);
     }
 
+    /**
+     * Sets the appropriate voltage range to read from. Defaults to {@link #_4_096V} to
+     * handle 3.3v inputs properly.
+     *
+     * @param range One of the static shorts above.
+     * @throws IOException Cannot access or set the device register
+     */
     public void setRange(short range) throws IOException {
         short cfgRegVal = getConfigRegister();
         cfgRegVal &= ~RANGE_MASK;
@@ -124,7 +159,9 @@ public class Adcv2x implements AutoCloseable {
      */
     public float getResult(int channel) throws IOException {
         short rawVal = getRawResult(channel);
-        return (float)rawVal * _scaler/1000;
+        float val = (float)rawVal * _scaler/1000;
+
+        return val;
     }
 
     public short getRawResult(int channel) throws IOException {
@@ -142,7 +179,7 @@ public class Adcv2x implements AutoCloseable {
         return readADC();
     }
 
-    short readADC() throws IOException {
+    public short readADC() throws IOException {
         short cfgRegVal = getConfigRegister();
         cfgRegVal |= START_READ; // set the start read bit
         setConfigRegister(cfgRegVal);
@@ -167,7 +204,7 @@ public class Adcv2x implements AutoCloseable {
         return (short)(fullValue>>>4);
     }
 
-    void setConfigRegister(short configValue) throws IOException {
+    private void setConfigRegister(short configValue) throws IOException {
         byte[] data = new byte[2];
         data[0] = (byte)((configValue>>>8) & 0xff);
         data[1] = (byte)(configValue & 0xff);
@@ -175,7 +212,7 @@ public class Adcv2x implements AutoCloseable {
         mDevice.writeRegBuffer(CONFIG, data, 2);
     }
 
-    short getConfigRegister() throws IOException {
+    private short getConfigRegister() throws IOException {
         byte[] buff = new byte[2];
         mDevice.readRegBuffer(CONFIG, buff, 2);
 
@@ -197,5 +234,10 @@ public class Adcv2x implements AutoCloseable {
                 mDevice = null;
             }
         }
+    }
+
+    @Override
+    public String toString() {
+        return "AdcV2x::" + mBus + "::" + Integer.toHexString(mAddress);
     }
 }
