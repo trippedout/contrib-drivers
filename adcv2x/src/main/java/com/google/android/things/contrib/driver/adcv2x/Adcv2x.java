@@ -42,28 +42,29 @@ public class Adcv2x implements AutoCloseable {
     public static final int I2C_ADDRESS_4A = 0x4A;
     public static final int I2C_ADDRESS_4B = 0x4B;
 
-    private String mBus;
-    private int mAddress;
-
     private I2cDevice mDevice;
 
     private float _scaler = 1.0f;
 
-    public static final short _6_144V = 0x00;
-    public static final short _4_096V = 0x01;
-    public static final short _2_048V = 0x02;
-    public static final short _1_024V = 0x03;
-    public static final short _0_512V = 0x04;
-    public static final short _0_256V = 0x05;
+    /**
+     * Used by {@link #getConfigRegister()} and {@link #setConfigRegister(short)}
+     * so we don't allocate new bytes with every call
+     */
+    private byte[] _configBytes = new byte[2];
 
-    private final short CONVERSION = 0x00;
-    private final short CONFIG = 0x01;
+    public static final short RANGE_6_144V = 0x00;
+    public static final short RANGE_4_096V = 0x01;
+    public static final short RANGE_2_048V = 0x02;
+    public static final short RANGE_1_024V = 0x03;
+    public static final short RANGE_0_512V = 0x04;
+    public static final short RANGE_0_256V = 0x05;
+
+    private final short BUFFER_CONVERSION = 0x00;
+    private final short BUFFER_CONFIG = 0x01;
 
     private final int START_READ = 0x8000;
-    private final int CHANNEL_MASK = 0x3000; // There are four channels, and single ended reads
-                                            //  are specified by a two-bit address at bits 13:12
+    private final int CHANNEL_MASK = 0x3000; // There are four channels, and single ended reads are specified by a two-bit address at bits 13:12
     private final int SINGLE_ENDED = 0x4000;   // Set for single-ended
-    private final int CFG_REG_CHL_MASK = 0xf000; // Used to clear the high nibble of the cfg regbefore we start our read reques
     private final int BUSY_MASK = 0x8000; // When the highest bit in the cfg reg is set, the conversion is done.
     private final int CHANNEL_SHIFT = 12;
 
@@ -89,9 +90,6 @@ public class Adcv2x implements AutoCloseable {
     public Adcv2x(String bus, int address) throws IOException {
         PeripheralManagerService pioService = new PeripheralManagerService();
         I2cDevice device = pioService.openI2cDevice(bus, address);
-
-        mBus = bus;
-        mAddress = address;
 
         try {
             connect(device);
@@ -125,11 +123,11 @@ public class Adcv2x implements AutoCloseable {
 
         // set the range here to 4 volts even tho we know we're only feeding it ~3.3
         // the dial turned all the way up will read ~3.2
-        setRange(_4_096V);
+        setRange(RANGE_4_096V);
     }
 
     /**
-     * Sets the appropriate voltage range to read from. Defaults to {@link #_4_096V} to
+     * Sets the appropriate voltage range to read from. Defaults to {@link #RANGE_4_096V} to
      * handle 3.3v inputs properly.
      *
      * @param range One of the static shorts above.
@@ -142,22 +140,22 @@ public class Adcv2x implements AutoCloseable {
         setConfigRegister(cfgRegVal);
 
         switch (range) {
-            case _6_144V:
+            case RANGE_6_144V:
                 _scaler = 3.0f; // each count represents 3.0 mV
                 break;
-            case _4_096V:
+            case RANGE_4_096V:
                 _scaler = 2.0f; // each count represents 2.0 mV
                 break;
-            case _2_048V:
+            case RANGE_2_048V:
                 _scaler = 1.0f; // each count represents 1.0 mV
                 break;
-            case _1_024V:
+            case RANGE_1_024V:
                 _scaler = 0.5f; // each count represents 0.5mV
                 break;
-            case _0_512V:
+            case RANGE_0_512V:
                 _scaler = 0.25f; // each count represents 0.25mV
                 break;
-            case _0_256V:
+            case RANGE_0_256V:
                 _scaler = 0.125f; // each count represents 0.125mV
                 break;
             default:
@@ -187,8 +185,6 @@ public class Adcv2x implements AutoCloseable {
         cfgRegVal |= (channel<<CHANNEL_SHIFT) & CHANNEL_MASK; // put the channel bits in
         cfgRegVal |= START_READ;    // set the start read bit
 
-        cfgRegVal = (short) (cfgRegVal & 0xFFFF);
-
         setConfigRegister(cfgRegVal);
 
         return readADC();
@@ -200,44 +196,34 @@ public class Adcv2x implements AutoCloseable {
         setConfigRegister(cfgRegVal);
 
         byte[] result = new byte[2];
-        short fullValue = 0;
         int busyDelay = 0;
 
         while ((getConfigRegister() & BUSY_MASK) == 0)
         {
             try {
-                Thread.sleep(100);
+                Thread.sleep(1);
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
-            if(busyDelay++ > 1000) return (short)0xffff;
+            if(busyDelay++ > 100) return (short)0xffff;
         }
 
-        mDevice.readRegBuffer(CONVERSION, result, 2);
+        mDevice.readRegBuffer(BUFFER_CONVERSION, result, 2);
 
-        fullValue = (short)((result[0]<<8) + result[1]);
-        return (short)(fullValue>>>4);
+        return (short)((result[0] << 4) + (result[1] >>> 4));
     }
 
     private void setConfigRegister(short configValue) throws IOException {
-        byte[] data = new byte[2];
-        data[0] = (byte)((configValue>>>8) & 0xff);
-        data[1] = (byte)(configValue & 0xff);
+        _configBytes[0] = (byte)((configValue>>>8) & 0xff);
+        _configBytes[1] = (byte)(configValue & 0xff);
 
-        mDevice.writeRegBuffer(CONFIG, data, 2);
+        mDevice.writeRegBuffer(BUFFER_CONFIG, _configBytes, 2);
     }
 
     private short getConfigRegister() throws IOException {
-        byte[] buff = new byte[2];
-        mDevice.readRegBuffer(CONFIG, buff, 2);
+        mDevice.readRegBuffer(BUFFER_CONFIG, _configBytes, 2);
 
-        // create short from buffer array
-        short regBuff = (short)(((buff[0] & 0xFF) << 8) | (buff[1] & 0xFF ));
-
-        // shift according to how they handle it in cpp lib - not sure why?
-        regBuff = (short)((((regBuff & 0xffff)>>>8) | (regBuff & 0xffff <<8)));
-
-        return regBuff;
+        return (short)(((_configBytes[0] & 0xFF) << 8) | (_configBytes[1] & 0xFF ));
     }
 
     @Override
@@ -249,10 +235,5 @@ public class Adcv2x implements AutoCloseable {
                 mDevice = null;
             }
         }
-    }
-
-    @Override
-    public String toString() {
-        return "AdcV2x::" + mBus + "::" + Integer.toHexString(mAddress);
     }
 }
